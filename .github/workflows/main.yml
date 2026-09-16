@@ -1,48 +1,42 @@
 name: Build BoxxPunch iOS
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
-      - principal
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app
-
-      - name: Find Xcode project
+      - name: Show files
         run: |
-          echo "=== Files ==="
-          find . -maxdepth 4 -type d -name "*.xcodeproj" -print
+          pwd
+          find . -maxdepth 3 -type f | sort
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - name: Build iOS app
         run: |
-          PROJECT=$(find . -type d -name "*.xcodeproj" | head -1)
+          PROJECT=$(find . -name "*.xcodeproj" -type d | head -1)
 
           if [ -z "$PROJECT" ]; then
-            echo "ERROR: Nu exista niciun fisier .xcodeproj"
+            echo "ERROR: Nu am gasit niciun fisier .xcodeproj"
             exit 1
           fi
 
-          echo "Project: $PROJECT"
-
-          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c \
-          'import sys,json; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
-
-          echo "Scheme: $SCHEME"
+          echo "Proiect gasit: $PROJECT"
 
           xcodebuild \
             -project "$PROJECT" \
-            -scheme "$SCHEME" \
+            -scheme BoxxPunchApp \
             -sdk iphonesimulator \
-            -configuration Release \
+            -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            clean build
