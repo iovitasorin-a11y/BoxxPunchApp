@@ -1,4 +1,4 @@
-name: Build BoxxPunch iOS
+name: Build BoxxPunch pentru iPhone
 
 on:
   push:
@@ -6,37 +6,139 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
+      - name: Descarca repository-ul
         uses: actions/checkout@v4
 
-      - name: Show files
+      - name: Dezarhiveaza proiectul
+        shell: bash
         run: |
-          pwd
-          find . -maxdepth 3 -type f | sort
+          set -euo pipefail
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
-      - name: Build iOS app
-        run: |
-          PROJECT=$(find . -name "*.xcodeproj" -type d | head -1)
-
-          if [ -z "$PROJECT" ]; then
-            echo "ERROR: Nu am gasit niciun fisier .xcodeproj"
+          ZIP_FILE="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::Nu am gasit arhiva ZIP in repository."
             exit 1
           fi
 
-          echo "Proiect gasit: $PROJECT"
+          mkdir -p extracted
+          ditto -x -k "$ZIP_FILE" extracted
+
+          SOURCE_DIR="$(find extracted -type f -name 'BoxxPunchApp.swift' -exec dirname {} \; | head -n 1)"
+          if [ -z "$SOURCE_DIR" ]; then
+            echo "::error::Nu am gasit fisierele Swift in arhiva ZIP."
+            exit 1
+          fi
+
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "Fisierele Swift sunt in: $SOURCE_DIR"
+
+      - name: Corecteaza importul Combine
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BLE_FILE="$SOURCE_DIR/BLEManager.swift"
+          if [ ! -f "$BLE_FILE" ]; then
+            echo "::error::Nu am gasit BLEManager.swift."
+            exit 1
+          fi
+
+          if ! grep -q '^import Combine$' "$BLE_FILE"; then
+            perl -0pi -e 's/\A/import Combine\n/' "$BLE_FILE"
+          fi
+
+      - name: Instaleaza XcodeGen
+        run: brew install xcodegen
+
+      - name: Creeaza proiectul Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > project.yml <<EOF
+          name: BoxxPunchApp
+          options:
+            bundleIdPrefix: com.sorin
+            deploymentTarget:
+              iOS: "16.0"
+          targets:
+            BoxxPunchApp:
+              type: application
+              platform: iOS
+              sources:
+                - path: "$SOURCE_DIR"
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.sorin.boxxpunchapp
+                  PRODUCT_NAME: BoxxPunchApp
+                  SWIFT_VERSION: "5.0"
+                  GENERATE_INFOPLIST_FILE: YES
+                  INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "Aplicatia foloseste Bluetooth pentru conectarea senzorilor Boxx Punch."
+                  INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription: "Aplicatia foloseste Bluetooth pentru conectarea senzorilor Boxx Punch."
+                  INFOPLIST_KEY_UILaunchScreen_Generation: YES
+                  TARGETED_DEVICE_FAMILY: "1"
+                  CODE_SIGNING_ALLOWED: NO
+                  CODE_SIGNING_REQUIRED: NO
+          schemes:
+            BoxxPunchApp:
+              build:
+                targets:
+                  BoxxPunchApp: all
+              run:
+                config: Debug
+              archive:
+                config: Release
+          EOF
+
+          xcodegen generate --spec project.yml
+          xcodebuild -list -project BoxxPunchApp.xcodeproj
+
+      - name: Construieste aplicatia pentru iPhone
+        shell: bash
+        run: |
+          set -euo pipefail
 
           xcodebuild \
-            -project "$PROJECT" \
+            -project BoxxPunchApp.xcodeproj \
             -scheme BoxxPunchApp \
-            -sdk iphonesimulator \
-            -configuration Debug \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             clean build
+
+      - name: Creeaza fisierul IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(find "$PWD/build/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Nu am gasit aplicatia construita."
+            exit 1
+          fi
+
+          OUTPUT_DIR="$PWD/output"
+          mkdir -p "$OUTPUT_DIR/Payload"
+          cp -R "$APP_PATH" "$OUTPUT_DIR/Payload/"
+          ditto -c -k --sequesterRsrc --keepParent "$OUTPUT_DIR/Payload" "$OUTPUT_DIR/BoxxPunchApp-unsigned.ipa"
+
+      - name: Incarca fisierul IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BoxxPunchApp-iPhone
+          path: output/BoxxPunchApp-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
